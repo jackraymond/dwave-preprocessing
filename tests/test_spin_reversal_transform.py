@@ -230,3 +230,36 @@ class TestSpinTransformComposite(unittest.TestCase):
         self.assertTrue(hasattr(sampleset,'info'))
         self.assertEqual(sampleset.info, {'has_some': True})
         
+    def test_srt_arugment(self):
+        # Two lowest energy (aligned) states
+        bqm = dimod.BinaryQuadraticModel(
+            {}, {(0, 1): -1}, 0, 'SPIN')
+        
+        sampler = dimod.ExactSolver()
+        ss = sampler.sample(bqm)
+        samples = ss.record.sample
+        print(samples)
+        sampler = SpinReversalTransformComposite(sampler)
+        SRT = np.ones(shape=(1,2))  # Neutral SRT leaves result unpermuted.
+
+        ss = sampler.sample(bqm, SRT=SRT)
+        self.assertTrue(np.all(ss.record.sample == samples))
+        
+        SRT = -np.ones(shape=(1,2))  # Flip-all SRT inverts the order
+        ss = sampler.sample(bqm, SRT=SRT)
+        self.assertTrue(np.all(ss.record.sample == -samples))
+
+        ss = sampler.sample(bqm, SRT=SRT, num_spin_reversal_transforms=0)
+        # SRT should be ignored, pass through works
+        ss = sampler.sample(bqm, SRT=SRT)
+        self.assertTrue(np.all(ss.record.sample == samples))
+        
+        num_spin_reversal_transforms = 3
+        SRT = -np.ones(shape=(num_spin_reversal_transforms, 2))  # Apply 3 SRTs
+        self.assertEqual(np.sum(ss.record.num_occurrences), 3*2**bqm.num_variables())
+        
+        
+        # Ordering of exact results are permuted. 
+        with self.assertRaisesException(ValueError, "Inconsistency of arguments"):
+            ss = sampler.sample(bqm, SRT=SRT, num_spin_reversal_transforms=num_spin_reversal_transforms+1)
+            

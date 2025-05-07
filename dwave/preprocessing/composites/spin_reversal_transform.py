@@ -137,7 +137,8 @@ class SpinReversalTransformComposite(ComposedSampler):
 
     @dimod.decorators.nonblocking_sample_method
     def sample(self, bqm: dimod.BinaryQuadraticModel, *,
-               num_spin_reversal_transforms: int = 1,
+               SRT: typing.Optional[np.ndarray] = None,
+               num_spin_reversal_transforms: typing.Optional[int] = None,
                **kwargs,
                ):
         """Sample from the binary quadratic model.
@@ -145,18 +146,33 @@ class SpinReversalTransformComposite(ComposedSampler):
         Args:
             bqm: Binary quadratic model to be sampled from.
 
+            SRT: A numpy array with shape (num_spin_reversal_transforms, bqm.num_variables).
+                A value 1 indicates a flip, a value 0 indicates no flip; applied to
+                in the order given by bqm.variables.
+                If this is not specified as an input values are generated uniformly
+                at random from the class pseudo-random number generator.
+                The class variable SRT is ignored when SRT is provided as a function
+                argument.
+
             num_spin_reversal_transforms:
                 Number of spin reversal transform runs.
                 A value of ``0`` will not transform the problem.
                 If you specify a nonzero value, each spin reversal transform
                 will result in an independent run of the child sampler.
+                If a class or function SRT is set then num_spin_reversal_transforms
+                is inferred by default, otherwise the default is 1.
 
         Returns:
             A sample set. Note that for a sampler that returns ``num_reads`` samples,
             the sample set will contain ``num_reads*num_spin_reversal_transforms`` samples.
+            The SRT array is returned as a sampleset info field, unless
+            num_spin_reversal_transforms=0 (no transform applied).
 
         Examples:
             This example runs 100 spin reversals applied to one variable of a QUBO problem.
+
+            We then take the lowest energy state (the ground state) that defines a special
+            gauge with maximum (weighted) number of ferromagnetic and negative-signed field terms.
 
             >>> from dimod import ExactSolver
             >>> from dwave.preprocessing.composites import SpinReversalTransformComposite
@@ -168,6 +184,11 @@ class SpinReversalTransformComposite(ComposedSampler):
             ...               num_spin_reversal_transforms=100)
             >>> len(response)
             400
+            >>> SRT = np.array(response.first.sample==1)
+            >>> response = composed_sampler.sample_qubo(Q,
+            ...               SRT=SRT[np.newaxis,:], num_reads=1)
+            >>> sum(response.record.num_occurrences)
+            1
         """
         sampler = self._child
 
@@ -179,14 +200,25 @@ class SpinReversalTransformComposite(ComposedSampler):
             yield sampleset  # this is the one actually used by the user
             return
 
+
+        # Get the SRT matrix
+        if SRT is None:
+            # We maintain the Leap behavior that num_spin_reversal_transforms == 1
+            # corresponds to a single problem with randomly flipped variables.
+            SRT = self.rng.random((num_spin_reversal_transforms, bqm.num_variables)) > .5
+        else:
+            nsrt, num_bqm_var = srt.shape
+            if num_bqm_var != bqm.num_variables:
+                raise ValueError('srt shape is inconsistent with the bqm')
+            if num_spin_reversal_transforms is not None:
+                if num_spin_reversal_transforms != nsrt:
+                    raise ValueError('srt shape is inconsistent with num_spin_reversal_transforms')
+            else:
+                num_spin_reversal_transforms = nsrt
+
         # we'll be modifying the BQM, so make a copy
         bqm = bqm.copy()
 
-        # We maintain the Leap behavior that num_spin_reversal_transforms == 1
-        # corresponds to a single problem with randomly flipped variables.
-
-        # Get the SRT matrix
-        SRT = self.rng.random((num_spin_reversal_transforms, bqm.num_variables)) > .5
 
         # Submit the problems
         samplesets: typing.List[dimod.SampleSet] = []
