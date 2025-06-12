@@ -19,7 +19,7 @@ import numpy as np
 
 from dimod import Vartype, ComposedSampler
 
-__all__ = ["AutomorphismComposite"]
+__all__ = ["AutomorphismComposite", "chimera_generators", "zephyr_generators", "generator_shuffle"]
 
 
 def chimera_generators(m, n=None, t=4):
@@ -157,7 +157,7 @@ def zephyr_generators(m, t=4):
     return [diagonal, vertical, horizontal] + shores
 
 
-def _generator_shuffle(generators, prng=None, vars_map=None):
+def generator_shuffle(generators, prng=None, vars_map=None):
     prng = np.random.default_rng(prng)
     if vars_map is None:
         vars_set = set(n for g in generators for n in g[0].keys())
@@ -340,7 +340,7 @@ class AutomorphismComposite(ComposedSampler):
         if self.generators is not None:
             vars_map = {i: i for i in bqm.variables}
             for i in range(num_automorphisms):
-                relabeling = _generator_shuffle(
+                relabeling = generator_shuffle(
                     self.generators, prng=self.rng, vars_map=vars_map
                 )
                 bqm.relabel_variables(relabeling)
@@ -448,7 +448,7 @@ if __name__ == "__main__":
                 print(Gedges.difference(Gnedges))
             assert Gnedges == Gedges
             # assert list(Gn.edges()) != list(G.edges())
-        random_perm = _generator_shuffle(generators)
+        random_perm = generator_shuffle(generators)
         assert set(random_perm.keys()) == Gnodes
         assert set(random_perm.values()) == Gnodes
         Gn = relabel_nodes(G, random_perm)
