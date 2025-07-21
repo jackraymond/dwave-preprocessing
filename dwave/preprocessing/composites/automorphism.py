@@ -301,7 +301,7 @@ class AutomorphismComposite(ComposedSampler):
         bqm: dimod.BinaryQuadraticModel,
         *,
         mappings: Optional[list[dict]] = None,
-        num_automorphisms: int = 1,
+        num_automorphisms: Optional[int] = None,
         **kwargs,
     ):
         """Sample from the binary quadratic model.
@@ -312,10 +312,14 @@ class AutomorphismComposite(ComposedSampler):
             mappings:
                 A list of mappings in the form of dictionaries.
                 Each dictionary defines a permutation over a
-                subset of variables.
+                subset of variables. If mappings is provided and
+                length 0, then a sampleset is returned subject
+                to no automorphism.
 
             num_automorphisms:
-                Number of automorphisms.
+                Number of automorphisms. If mappings is provided, it
+                is inferred as :code:`len(mappings)`, otherwise it is defaulted
+                to 1.
                 A value of ``0`` will not transform the problem.
                 If you specify a nonzero value, each automorphism
                 will result in an independent run of the child sampler.
@@ -335,11 +339,17 @@ class AutomorphismComposite(ComposedSampler):
             ...
             >>> Q = {('a', 'a'): -1, ('b', 'b'): -1, ('a', 'b'): 2}
             >>> response = composed_sampler.sample_qubo(Q,
-            ...               num_automorphisms=100)
+            ...               num_automorphisms=10)
             >>> len(response)
-            400
+            40
         """
         sampler = self._child
+
+        if num_automorphisms is None:
+            if mappings is not None:
+                num_automorphisms = len(mappings)
+            else:
+                num_automorphisms = 1
 
         # No SRTs, so just pass the problem through
         if not num_automorphisms or not bqm.num_variables:
