@@ -12,17 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import typing
+from typing import Optional, Sequence, Any
 
 import dimod
 import numpy as np
 
-from dimod import Vartype, ComposedSampler
+from dimod import ComposedSampler
 
-__all__ = ["AutomorphismComposite", "chimera_generators", "zephyr_generators", "generator_shuffle"]
+__all__ = [
+    "AutomorphismComposite",
+    "chimera_generators",
+    "zephyr_generators",
+    "shuffle_by_generators",
+]
 
 
-def chimera_generators(m, n=None, t=4):
+def chimera_generators(m: int, n: Optional[int] = None, t: int = 4) -> list[dict]:
     if n is None:
         n = m
 
@@ -89,7 +94,7 @@ def chimera_generators(m, n=None, t=4):
         return [vertical, horizontal] + vert_shores + horiz_shores
 
 
-def flipZephyr(u, w, k, j, z, orient, m):
+def flipZephyr(u: int, w: int, k: int, j: int, z: int, orient: bool, m: int) -> tuple:
     if orient == True:
         ue = u
     else:
@@ -103,7 +108,15 @@ def flipZephyr(u, w, k, j, z, orient, m):
     )
 
 
-def zephyr_generators(m, t=4):
+def zephyr_generators(m: int, t: int = 4) -> list[dict]:
+    """Create generators for zephyr
+
+    m : int
+        Grid parameter for the Zephyr lattice.
+    t : int
+        Tile parameter for the Zephyr lattice.
+    """
+
     diagonal = (
         {
             (u, w, k, j, z): (1 - u, w, k, j, z)
@@ -157,18 +170,18 @@ def zephyr_generators(m, t=4):
     return [diagonal, vertical, horizontal] + shores
 
 
-def generator_shuffle(generators, prng=None, vars_map=None):
+def shuffle_by_generators(generators, prng=None, mapping=None):
     prng = np.random.default_rng(prng)
-    if vars_map is None:
+    if mapping is None:
         vars_set = set(n for g in generators for n in g[0].keys())
-        vars_map = {n: n for n in vars_set}
+        mapping = {n: n for n in vars_set}
     for generator, len_orbit in generators:
         # Generator is a dictionary, with some given orbit length
         # e.g. {2: 4, 4: 2}
         for _ in range(prng.integers(len_orbit)):
-            vars_map.update({k: vars_map[v] for k, v in generator.items()})
+            mapping.update({k: mapping[v] for k, v in generator.items()})
 
-    return vars_map
+    return mapping
 
 
 class AutomorphismComposite(ComposedSampler):
@@ -215,9 +228,9 @@ class AutomorphismComposite(ComposedSampler):
 
     """
 
-    _children: typing.List[dimod.core.Sampler]
-    _parameters: typing.Dict[str, typing.Sequence[str]]
-    _properties: typing.Dict[str, typing.Any]
+    _children: list[dimod.core.Sampler]
+    _parameters: dict[str, Sequence[str]]
+    _properties: dict[str, Any]
 
     def __init__(self, child: dimod.core.Sampler, *, seed=None, generators=None):
         self._child = child
@@ -225,7 +238,7 @@ class AutomorphismComposite(ComposedSampler):
         self.generators = generators
 
     @property
-    def children(self) -> typing.List[dimod.core.Sampler]:
+    def children(self) -> list[dimod.core.Sampler]:
         try:
             return self._children
         except AttributeError:
@@ -235,7 +248,7 @@ class AutomorphismComposite(ComposedSampler):
         return children
 
     @property
-    def parameters(self) -> typing.Dict[str, typing.Sequence[str]]:
+    def parameters(self) -> dict[str, Sequence[str]]:
         try:
             return self._parameters
         except AttributeError:
@@ -246,7 +259,7 @@ class AutomorphismComposite(ComposedSampler):
         return parameters
 
     @property
-    def properties(self) -> typing.Dict[str, typing.Any]:
+    def properties(self) -> dict[str, Any]:
         try:
             return self._properties
         except AttributeError:
@@ -256,7 +269,7 @@ class AutomorphismComposite(ComposedSampler):
         return self._properties
 
     class _SampleSets:
-        def __init__(self, samplesets: typing.List[dimod.SampleSet]):
+        def __init__(self, samplesets: list[dimod.SampleSet]):
             self.samplesets = samplesets
 
         def done(self) -> bool:
@@ -287,6 +300,7 @@ class AutomorphismComposite(ComposedSampler):
         self,
         bqm: dimod.BinaryQuadraticModel,
         *,
+        mappings: Optional[list[dict]] = None,
         num_automorphisms: int = 1,
         **kwargs,
     ):
@@ -295,11 +309,17 @@ class AutomorphismComposite(ComposedSampler):
         Args:
             bqm: Binary quadratic model to be sampled from.
 
+            mappings:
+                A list of mappings in the form of dictionaries.
+                Each dictionary defines a permutation over a
+                subset of variables.
+
             num_automorphisms:
                 Number of automorphisms.
                 A value of ``0`` will not transform the problem.
                 If you specify a nonzero value, each automorphism
                 will result in an independent run of the child sampler.
+                The value given, if not None, must match len(mappings)
 
         Returns:
             A sample set. Note that for a sampler that returns ``num_reads`` samples,
@@ -329,32 +349,39 @@ class AutomorphismComposite(ComposedSampler):
             yield sampleset  # this is the one actually used by the user
             return
 
-        # we'll be modifying the BQM, so make a copy
-        bqm = bqm.copy()
-
-        # We maintain the Leap behavior that num_automorphisms == 1
-        # corresponds to a single problem with randomly flipped variables.
-
-        # Submit the problems
-        samplesets: typing.List[dimod.SampleSet] = []
-        if self.generators is not None:
-            vars_map = {i: i for i in bqm.variables}
-            for i in range(num_automorphisms):
-                relabeling = generator_shuffle(
-                    self.generators, prng=self.rng, vars_map=vars_map
+        # Check or generate mappings.
+        if mappings is not None:
+            # Given permutation
+            if len(mappings) != num_automorphisms:
+                raise ValueError(
+                    "len(mappings) should match num_automorphisms when not None"
                 )
-                bqm.relabel_variables(relabeling)
-                samplesets.append(sampler.sample(bqm, **kwargs))
+        elif self.generators is not None:
+            # Generator compatible (uniform random) permutation on all variables
+            mapping = {v: v for v in bqm.variables}
+            mappings = [
+                shuffle_by_generators(self.generators, prng=self.rng, mapping=mapping)
+                for n in rand(num_automorphisms)
+            ]
         else:
-            vars_copy = list(bqm.variables)
-            for i in range(num_automorphisms):
-                self.rng.shuffle(vars_copy)
-                relabeling = {i: j for i, j in zip(bqm.variables, vars_copy)}
-                bqm.relabel_variables(relabeling)
-                samplesets.append(sampler.sample(bqm, **kwargs))
+            # Random permutation (no generator constraint) on all variables
+            var_list = list(bqm.variables)
+            mappings = []
+            for n in range(num_automorphisms):
+                self.rng.shuffle(var_list)
+                mappings.append({v1: v2 for v1, v2 in zip(bqm.variables, var_list)})
 
+        samplesets: list[dimod.SampleSet] = []
+        for mapping in mappings:
+            _bqm = bqm.copy()  # Costly, but assumed not to be a bottleneck
+            _bqm.relabel_variables(mapping)
+            samplesets.append(sampler.sample(_bqm, **kwargs))
         # Yield a view of the samplesets that reports done()-ness
         yield self._SampleSets(samplesets)
+
+        # Relabel variables on samplesets
+        for mapping, ss in zip(mappings, samplesets):
+            ss.relabel_variables({v: k for k, v in mapping.items()})
 
         # Reorder the variables of all the returned samplesets to match our
         # original BQM
@@ -436,11 +463,11 @@ if __name__ == "__main__":
                 print(g.values())
             assert set(g.keys()) == set(g.values())
             Gn = relabel_nodes(G, g)
+            Gnedges = set(tuple(sorted(e)) for e in G.edges())
             if set(Gn.nodes()) != Gnodes:
                 print(Gnodes.difference(set(Gn.nodes())))
                 print(set(Gn.nodes()).difference(Gnedges))
             assert set(Gn.nodes()) == Gnodes
-            Gnedges = set(tuple(sorted(e)) for e in G.edges())
             if Gnedges != Gedges:
                 print(sorted(set(tuple(sorted(e)) for e in Gedges)))
                 print(sorted(set(G.edges())))
@@ -448,7 +475,7 @@ if __name__ == "__main__":
                 print(Gedges.difference(Gnedges))
             assert Gnedges == Gedges
             # assert list(Gn.edges()) != list(G.edges())
-        random_perm = generator_shuffle(generators)
+        random_perm = shuffle_by_generators(generators)
         assert set(random_perm.keys()) == Gnodes
         assert set(random_perm.values()) == Gnodes
         Gn = relabel_nodes(G, random_perm)
