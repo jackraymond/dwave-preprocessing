@@ -22,6 +22,7 @@ from dimod import ComposedSampler
 __all__ = [
     "AutomorphismComposite",
     "chimera_generators",
+    "pegasus_generators",
     "zephyr_generators",
     "shuffle_by_generators",
 ]
@@ -170,6 +171,43 @@ def zephyr_generators(m: int, t: int = 4) -> list[dict]:
     return [diagonal, vertical, horizontal] + shores
 
 
+def pegasus_generators(m: int) -> list[dict]:
+    """Create generators for pegasus.
+
+    A reflection on the main diagonal, and exchanges of oddly coupled pairs.
+
+    m : int
+        Grid parameter for the Pegasus lattice.
+    """
+
+    diagonal = (
+        {
+            (u, w, k, z): (1 - u, m - 1 - w, 11 - k, m - 2 - z)
+            for u in range(2)
+            for w in range(m)
+            for k in range(12)
+            for z in range(m - 1)
+        },
+        2,
+    )
+    # Odd-pairs
+    odd_pairs = [
+        (
+            {
+                (u, w, koff + kin, z): (u, w, koff + (kin + 1) % 2, z)
+                for z in range(m - 1)
+                for kin in range(2)
+            },
+            2,
+        )
+        for koff in range(0, 12, 2)
+        for u in range(2)
+        for w in range(m)
+    ]
+
+    return [diagonal] + odd_pairs
+
+
 def shuffle_by_generators(generators, prng=None, mapping=None):
     prng = np.random.default_rng(prng)
     if mapping is None:
@@ -182,6 +220,20 @@ def shuffle_by_generators(generators, prng=None, mapping=None):
             mapping.update({k: mapping[v] for k, v in generator.items()})
 
     return mapping
+
+
+def prune_by_vacancies(proposal, nodeset):
+    """Remove mappings for absent nodes, and delete invalidated maps."""
+    # Removing as a function of edge defects would also be useful.
+
+    nodeset = nodeset.intersection(set(proposal[0].keys()))
+    if not nodeset:
+        return None
+    new = {n: proposal[0][n] for n in nodeset}
+    if nodeset == set(new.values()):
+        return (new, proposal[1])
+    else:
+        return None
 
 
 class AutomorphismComposite(ComposedSampler):
@@ -317,13 +369,13 @@ class AutomorphismComposite(ComposedSampler):
                 to no automorphism.
 
             num_automorphisms:
-                Number of automorphisms. If mappings is provided, it
+                When mappings is not given, specifies teh number of mappings to
+                apply (create). If mappings is provided, it
                 is inferred as :code:`len(mappings)`, otherwise it is defaulted
                 to 1.
-                A value of ``0`` will not transform the problem.
-                If you specify a nonzero value, each automorphism
-                will result in an independent run of the child sampler.
-                The value given, if not None, must match len(mappings)
+                A value of ``0`` will result in sampling of an unmapped problem.
+                If mappings is None the mappings are generated randomly using the
+                `generators` class variable.
 
         Returns:
             A sample set. Note that for a sampler that returns ``num_reads`` samples,
@@ -371,7 +423,7 @@ class AutomorphismComposite(ComposedSampler):
             mapping = {v: v for v in bqm.variables}
             mappings = [
                 shuffle_by_generators(self.generators, prng=self.rng, mapping=mapping)
-                for n in rand(num_automorphisms)
+                for _ in range(num_automorphisms)
             ]
         else:
             # Random permutation (no generator constraint) on all variables
@@ -407,12 +459,13 @@ class AutomorphismComposite(ComposedSampler):
 
 
 if __name__ == "__main__":
-    from dwave_networkx import chimera_graph, zephyr_graph
+    from dwave_networkx import chimera_graph, zephyr_graph, pegasus_graph
     from networkx import relabel_nodes
     from dimod import ExactSolver
     from itertools import product
 
-    # from dwave.preprocessing.composites import AutomorphismComposite
+    # QUITE THOROUGH: MOVE THIS TO TESTS
+
     base_sampler = ExactSolver()
     generators = [({"a": "b", "b": "a"}, 2)]
     composed_sampler = AutomorphismComposite(base_sampler, generators=generators)
@@ -422,22 +475,38 @@ if __name__ == "__main__":
 
     # Chimera_cell:
     from dwave.system.testing import MockDWaveSampler
-    from dwave_networkx import chimera_coordinates, zephyr_coordinates, draw_chimera
+    from dwave_networkx import (
+        chimera_coordinates,
+        zephyr_coordinates,
+        pegasus_coordinates,
+        draw_chimera,
+    )
     import matplotlib.pyplot as plt
 
     # Test chimera generators:
-    if False:
-        topology_type = "chimera"
+    topology_type = "chimera"
+    topology_type = "zephyr"
+    topology_type = "pegasus"
+    if topology_type == "chimera":
         topology_shape = [3, 2, 3]
         make_graph = chimera_graph
         graph_generators = chimera_generators
         coord_transform = chimera_coordinates(*topology_shape).chimera_to_linear
-    else:
-        topology_type = "zephyr"
+        shapes = product([1, 3], [1, 3])
+    elif topology_type == "zephyr":
         topology_shape = [3, 2]
         make_graph = zephyr_graph
         graph_generators = zephyr_generators
         coord_transform = zephyr_coordinates(*topology_shape).zephyr_to_linear
+        shapes = product([1, 3], [1, 3])
+    elif topology_type == "pegasus":
+        topology_shape = [2]
+        make_graph = pegasus_graph
+        graph_generators = pegasus_generators
+        coord_transform = pegasus_coordinates(*topology_shape).pegasus_to_linear
+        shapes = [[2], [3]]
+    else:
+        raise ValueError("Unknown topology")
     base_sampler = MockDWaveSampler(
         topology_type=topology_type, topology_shape=topology_shape
     )
@@ -454,20 +523,36 @@ if __name__ == "__main__":
         ({coord_transform(k): coord_transform(v) for k, v in g[0].items()}, g[1])
         for g in generators
     ]
-
-    composed_sampler = AutomorphismComposite(base_sampler, generators=generators)
+    pruned_generators = []
+    for g in generators:
+        new = prune_by_vacancies(proposal=g, nodeset=Gnodes)
+        if new:
+            pruned_generators.append(new)
+            assert set(new[0].keys()).issubset(Gnodes)
+    composed_sampler = AutomorphismComposite(base_sampler, generators=pruned_generators)
     bqm = dimod.BinaryQuadraticModel("SPIN").from_ising({}, {e: -1 for e in G.edges})
     response = composed_sampler.sample(bqm, num_automorphisms=2)
     print(response.first.sample)
 
-    for t, m in product([1, 3], [1, 3]):
-        print(m, t)
-        graph_params = {"m": m, "t": t, "coordinates": True}
-        G = make_graph(**graph_params)
+    for shape in shapes:
+        if len(shape) == 2:
+            m, t = shape
+            graph_params = {"m": shape[0], "t": shape[1]}
+        else:
+            m = shape
+            graph_params = {"m": shape[0]}
+        G = make_graph(**graph_params, coordinates=True)
         Gedges = set(tuple(sorted(e)) for e in G.edges())
         Gnodes = set(G.nodes())
-        generators = graph_generators(m=m, t=t)
-        for g, ol in generators:
+        generators = graph_generators(**graph_params)
+        pruned_generators = []
+        for g in generators:
+            new = prune_by_vacancies(proposal=g, nodeset=Gnodes)
+            if new:
+                pruned_generators.append(new)
+                assert set(new[0].keys()).issubset(Gnodes)
+
+        for g, ol in pruned_generators:
             if set(g.keys()) != set(g.values()):
                 print(g.keys())
                 print(g.values())
@@ -475,8 +560,9 @@ if __name__ == "__main__":
             Gn = relabel_nodes(G, g)
             Gnedges = set(tuple(sorted(e)) for e in G.edges())
             if set(Gn.nodes()) != Gnodes:
-                print(Gnodes.difference(set(Gn.nodes())))
-                print(set(Gn.nodes()).difference(Gnedges))
+                print(g, Gnodes)
+                print("Gnodes Gn.nodes difference", Gnodes.difference(set(Gn.nodes())))
+                print("Gnodes, Gnedges difference", set(Gn.nodes()).difference(Gnedges))
             assert set(Gn.nodes()) == Gnodes
             if Gnedges != Gedges:
                 print(sorted(set(tuple(sorted(e)) for e in Gedges)))
@@ -485,7 +571,8 @@ if __name__ == "__main__":
                 print(Gedges.difference(Gnedges))
             assert Gnedges == Gedges
             # assert list(Gn.edges()) != list(G.edges())
-        random_perm = shuffle_by_generators(generators)
+
+        random_perm = shuffle_by_generators(pruned_generators)
         assert set(random_perm.keys()) == Gnodes
         assert set(random_perm.values()) == Gnodes
         Gn = relabel_nodes(G, random_perm)
