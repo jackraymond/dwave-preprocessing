@@ -13,18 +13,33 @@
 # limitations under the License.
 
 from typing import Optional, Sequence, Any
+import warnings
+
+import networkx as nx
 
 import dimod
 import numpy as np
 
 from dimod import ComposedSampler
 
+try:
+    from dwave.experimental.automorphism import schreier_rep
+    from dwave.experimental.automorphism import (
+        sample_automorphisms as sample_automorphisms_u_vectors,
+    )
+except:
+    warnings.warn(
+        "dwave experimental unavailable, use of u_vectors and "
+        "generator automation is not available. See "
+        "dwave-experimental"
+    )
+
 __all__ = [
     "AutomorphismComposite",
     "chimera_generators",
     "pegasus_generators",
     "zephyr_generators",
-    "shuffle_by_generators",
+    "sample_automorphisms_listdict",
 ]
 
 
@@ -208,12 +223,12 @@ def pegasus_generators(m: int) -> list[dict]:
     return [diagonal] + odd_pairs
 
 
-def shuffle_by_generators(generators, prng=None, mapping=None):
+def sample_automorphisms_listdict(generators_listdict, prng=None, mapping=None):
     prng = np.random.default_rng(prng)
     if mapping is None:
-        vars_set = set(n for g in generators for n in g[0].keys())
+        vars_set = set(n for g in generators_listdict for n in g[0].keys())
         mapping = {n: n for n in vars_set}
-    for generator, len_orbit in generators:
+    for generator, len_orbit in generators_listdict:
         # Generator is a dictionary, with some given orbit length
         # e.g. {2: 4, 4: 2}
         for _ in range(prng.integers(len_orbit)):
@@ -257,7 +272,19 @@ class AutomorphismComposite(ComposedSampler):
 
         seed: As passed to :func:`numpy.random.default_rng`.
 
-        generators: A set of permutations compatible with the child structure.
+        generators_listdict: A set of permutations compatible with the child
+            strcture. A list where each element is a tuple of generator (dict)
+            and integer orbit length. This allows for uniform sampling of some
+            graphs. If generators_listdict is None (by default) a schreir_context
+            is used.
+
+        schreir_context: A dwave.experimental.SchreirContext object. This allows
+            fair sampling of any graph. The SchreirContext for an arbitrary
+            graph can be created using dwave.experimental. If a schreir_context
+            is None, and generators_listdict is None, then the schreir_context
+            compatible with the child sampler structure is created by default.
+            If both a generators_listdict, and a schreir_context are provided,
+            the generators_listdict is ignored.
 
     Examples:
         This example composes a dimod ExactSolver sampler with automorphims then
@@ -266,7 +293,8 @@ class AutomorphismComposite(ComposedSampler):
         >>> from dimod import ExactSolver
         >>> from dwave.preprocessing.composites import AutomorphismComposite
         >>> base_sampler = ExactSolver()
-        >>> composed_sampler = AutomorphismComposite(base_sampler)
+        >>> generators_listdict = [({'a': 'b', 'b':'a'}, 2)]
+        >>> composed_sampler = AutomorphismComposite(base_sampler, generators_listdict)
         ... # Sample an Ising problem
         >>> response = composed_sampler.sample_ising({'a': -0.5, 'b': 1.0}, {('a', 'b'): -1})
         >>> response.first.sample
@@ -274,20 +302,39 @@ class AutomorphismComposite(ComposedSampler):
 
     References
     ----------
-    .. [#km] Andrew D. King and Catherine C. McGeoch. Algorithm engineering
-        for a quantum annealing platform. https://arxiv.org/abs/1410.2628,
-        2014.
-
+    .. [#TODO]
     """
 
     _children: list[dimod.core.Sampler]
     _parameters: dict[str, Sequence[str]]
     _properties: dict[str, Any]
 
-    def __init__(self, child: dimod.core.Sampler, *, seed=None, generators=None):
+    def __init__(
+        self,
+        child: dimod.core.Sampler,
+        *,
+        seed=None,
+        generators_listdict: list[tuple[dict, int]] = None,
+        generators_u_vector: list[list[np.ndarray[np.intp]]] = None,
+        G: nx.Graph = None,
+        idx_to_node: dict = None,
+    ):
         self._child = child
         self.rng = np.random.default_rng(seed)
-        self.generators = generators
+        self.generators_listdict = generators_listdict
+        self.generators_u_vector = generators_u_vector
+        self.idx_to_node = idx_to_node
+        if (
+            generators_u_vector is None
+            and generators_listdict is None
+            and G is not None
+        ):
+            self.idx_to_node = {idx: n for idx, n in enumerate(G.nodes)}
+            result = schreier_rep(
+                nx.relabel_nodes(G, {n: idx for idx, n in self.idx_to_node.items()}),
+                num_samples=G.number_of_nodes(),
+            )
+            self.generators_u_vector = result.u_vector
 
     @property
     def children(self) -> list[dimod.core.Sampler]:
@@ -375,7 +422,7 @@ class AutomorphismComposite(ComposedSampler):
                 to 1.
                 A value of ``0`` will result in sampling of an unmapped problem.
                 If mappings is None the mappings are generated randomly using the
-                `generators` class variable.
+                `generators_listdict` class variable.
 
         Returns:
             A sample set. Note that for a sampler that returns ``num_reads`` samples,
@@ -418,12 +465,22 @@ class AutomorphismComposite(ComposedSampler):
                 raise ValueError(
                     "len(mappings) should match num_automorphisms when not None"
                 )
-        elif self.generators is not None:
+        elif self.generators_listdict is not None:
             # Generator compatible (uniform random) permutation on all variables
             mapping = {v: v for v in bqm.variables}
             mappings = [
-                shuffle_by_generators(self.generators, prng=self.rng, mapping=mapping)
+                sample_automorphisms_listdict(
+                    self.generators_listdict, prng=self.rng, mapping=mapping
+                )
                 for _ in range(num_automorphisms)
+            ]
+        elif self.generators_u_vector is not None:
+            arrays = sample_automorphisms_u_vectors(
+                self.generators_u_vector, num_samples=num_automorphisms
+            )
+            mappings = [
+                {self.idx_to_node[k]: self.idx_to_node[v] for k, v in enumerate(array)}
+                for array in arrays
             ]
         else:
             # Random permutation (no generator constraint) on all variables
@@ -467,11 +524,27 @@ if __name__ == "__main__":
     # QUITE THOROUGH: MOVE THIS TO TESTS
 
     base_sampler = ExactSolver()
-    generators = [({"a": "b", "b": "a"}, 2)]
-    composed_sampler = AutomorphismComposite(base_sampler, generators=generators)
-    # Sample an Ising problem
+
+    G = nx.from_edgelist([("a", "b")])
+    composed_sampler = AutomorphismComposite(base_sampler, G=G)
+    print(composed_sampler.generators_u_vector)
+    print(
+        sample_automorphisms_u_vectors(
+            composed_sampler.generators_u_vector, 10, rng=None
+        )
+    )
     response = composed_sampler.sample_ising({"a": -0.5, "b": 1.0}, {("a", "b"): -1})
     print(response.first.sample)
+
+    for generators_listdict in [None, [({"a": "b", "b": "a"}, 2)]]:
+        composed_sampler = AutomorphismComposite(
+            base_sampler, generators_listdict=generators_listdict
+        )
+        # Sample an Ising problem
+        response = composed_sampler.sample_ising(
+            {"a": -0.5, "b": 1.0}, {("a", "b"): -1}
+        )
+        print(response.first.sample)
 
     # Chimera_cell:
     from dwave.system.testing import MockDWaveSampler
@@ -485,8 +558,8 @@ if __name__ == "__main__":
 
     # Test chimera generators:
     topology_type = "chimera"
-    topology_type = "zephyr"
-    topology_type = "pegasus"
+    # topology_type = "zephyr"
+    # topology_type = "pegasus"
     if topology_type == "chimera":
         topology_shape = [3, 2, 3]
         make_graph = chimera_graph
@@ -529,10 +602,17 @@ if __name__ == "__main__":
         if new:
             pruned_generators.append(new)
             assert set(new[0].keys()).issubset(Gnodes)
-    composed_sampler = AutomorphismComposite(base_sampler, generators=pruned_generators)
+    composed_sampler = AutomorphismComposite(
+        base_sampler, generators_listdict=pruned_generators
+    )
+
+    composed_sampler2 = AutomorphismComposite(base_sampler, G=G)
+    print("u_vector", composed_sampler2.generators_u_vector)
+
     bqm = dimod.BinaryQuadraticModel("SPIN").from_ising({}, {e: -1 for e in G.edges})
-    response = composed_sampler.sample(bqm, num_automorphisms=2)
-    print(response.first.sample)
+    for cs in [composed_sampler, composed_sampler2]:
+        response = composed_sampler.sample(bqm, num_automorphisms=2)
+        print(response.first.sample)
 
     for shape in shapes:
         if len(shape) == 2:
@@ -572,7 +652,7 @@ if __name__ == "__main__":
             assert Gnedges == Gedges
             # assert list(Gn.edges()) != list(G.edges())
 
-        random_perm = shuffle_by_generators(pruned_generators)
+        random_perm = sample_automorphisms_listdict(pruned_generators)
         assert set(random_perm.keys()) == Gnodes
         assert set(random_perm.values()) == Gnodes
         Gn = relabel_nodes(G, random_perm)
