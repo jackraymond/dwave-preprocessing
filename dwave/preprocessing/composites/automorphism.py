@@ -39,11 +39,39 @@ __all__ = [
     "chimera_generators",
     "pegasus_generators",
     "zephyr_generators",
-    "sample_automorphisms_listdict",
+    "sample_automorphisms_listtuple",
 ]
 
 
-def chimera_generators(m: int, n: Optional[int] = None, t: int = 4) -> list[dict]:
+def listtuple_to_arrays(
+    listtuple: list[tuple[dict, int]], node_to_idx: dict
+) -> list[list[np.ndarray[np.intp]]]:
+    """Unwrap (generator, cycle-length) pairs into array format"""
+
+    nodeset = set(node_to_idx.keys())
+    listtuple = [
+        (prune_by_vacancies(g, nodeset), n) for g, n in listtuple
+    ]  # Compress listtuple w.r.t. mapped nodes.
+    listtuple = [p for p in listtuple if p[0]]  # Remove anything redundant
+    print(listtuple, len(listtuple))
+    llarray = [
+        [np.arange(len(node_to_idx), dtype=np.intp) for _ in range(n - 1)]
+        for _, n in listtuple
+    ]
+    for larray, (g, cycle_len) in zip(llarray, listtuple):
+        g = {node_to_idx[k]: node_to_idx[v] for k, v in g.items()}
+        for k, v in g.items():
+            larray[0][k] = v  # First element is standard generator
+        for idx in range(cycle_len - 2):
+            parray = larray[idx]  # same generator applied up to n-1 times.
+            for k, v in g.items():
+                larray[idx + 1][parray[k]] = parray[v]
+    return llarray
+
+
+def chimera_generators(
+    m: int, n: Optional[int] = None, t: int = 4
+) -> list[tuple[dict, int]]:
     if n is None:
         n = m
 
@@ -124,7 +152,7 @@ def flipZephyr(u: int, w: int, k: int, j: int, z: int, orient: bool, m: int) -> 
     )
 
 
-def zephyr_generators(m: int, t: int = 4) -> list[dict]:
+def zephyr_generators(m: int, t: int = 4) -> list[tuple[dict, int]]:
     """Create generators for zephyr
 
     m : int
@@ -186,7 +214,7 @@ def zephyr_generators(m: int, t: int = 4) -> list[dict]:
     return [diagonal, vertical, horizontal] + shores
 
 
-def pegasus_generators(m: int) -> list[dict]:
+def pegasus_generators(m: int) -> list[tuple[dict, int]]:
     """Create generators for pegasus.
 
     A reflection on the main diagonal, and exchanges of oddly coupled pairs.
@@ -223,32 +251,32 @@ def pegasus_generators(m: int) -> list[dict]:
     return [diagonal] + odd_pairs
 
 
-def sample_automorphisms_listdict(generators_listdict, prng=None, mapping=None):
+def sample_automorphisms_listtuple(generators_listtuple, prng=None, mapping=None):
     prng = np.random.default_rng(prng)
     if mapping is None:
-        vars_set = set(n for g in generators_listdict for n in g[0].keys())
+        vars_set = set(n for g in generators_listtuple for n in g[0].keys())
         mapping = {n: n for n in vars_set}
-    for generator, len_orbit in generators_listdict:
-        # Generator is a dictionary, with some given orbit length
+    for generator, len_cycle in generators_listtuple:
+        # Generator is a dictionary, with some given cycle length
         # e.g. {2: 4, 4: 2}
-        for _ in range(prng.integers(len_orbit)):
+        for _ in range(prng.integers(len_cycle)):
             mapping.update({k: mapping[v] for k, v in generator.items()})
 
     return mapping
 
 
-def prune_by_vacancies(proposal, nodeset):
+def prune_by_vacancies(generator, nodeset):
     """Remove mappings for absent nodes, and delete invalidated maps."""
     # Removing as a function of edge defects would also be useful.
 
-    nodeset = nodeset.intersection(set(proposal[0].keys()))
+    nodeset = nodeset.intersection(set(generator.keys()))
     if not nodeset:
-        return None
-    new = {n: proposal[0][n] for n in nodeset}
+        return {}
+    new = {n: generator[n] for n in nodeset}
     if nodeset == set(new.values()):
-        return (new, proposal[1])
+        return new
     else:
-        return None
+        return {}
 
 
 class AutomorphismComposite(ComposedSampler):
@@ -272,19 +300,19 @@ class AutomorphismComposite(ComposedSampler):
 
         seed: As passed to :func:`numpy.random.default_rng`.
 
-        generators_listdict: A set of permutations compatible with the child
+        generators_listtuple: A set of permutations compatible with the child
             strcture. A list where each element is a tuple of generator (dict)
-            and integer orbit length. This allows for uniform sampling of some
-            graphs. If generators_listdict is None (by default) a schreir_context
+            and integer cycle length. This allows for uniform sampling of some
+            graphs. If generators_listtuple is None (by default) a schreir_context
             is used.
 
         schreir_context: A dwave.experimental.SchreirContext object. This allows
             fair sampling of any graph. The SchreirContext for an arbitrary
             graph can be created using dwave.experimental. If a schreir_context
-            is None, and generators_listdict is None, then the schreir_context
+            is None, and generators_listtuple is None, then the schreir_context
             compatible with the child sampler structure is created by default.
-            If both a generators_listdict, and a schreir_context are provided,
-            the generators_listdict is ignored.
+            If both a generators_listtuple, and a schreir_context are provided,
+            the generators_listtuple is ignored.
 
     Examples:
         This example composes a dimod ExactSolver sampler with automorphims then
@@ -293,8 +321,8 @@ class AutomorphismComposite(ComposedSampler):
         >>> from dimod import ExactSolver
         >>> from dwave.preprocessing.composites import AutomorphismComposite
         >>> base_sampler = ExactSolver()
-        >>> generators_listdict = [({'a': 'b', 'b':'a'}, 2)]
-        >>> composed_sampler = AutomorphismComposite(base_sampler, generators_listdict)
+        >>> generators_listtuple = [({'a': 'b', 'b':'a'}, 2)]
+        >>> composed_sampler = AutomorphismComposite(base_sampler, generators_listtuple)
         ... # Sample an Ising problem
         >>> response = composed_sampler.sample_ising({'a': -0.5, 'b': 1.0}, {('a', 'b'): -1})
         >>> response.first.sample
@@ -314,19 +342,19 @@ class AutomorphismComposite(ComposedSampler):
         child: dimod.core.Sampler,
         *,
         seed=None,
-        generators_listdict: list[tuple[dict, int]] = None,
+        generators_listtuple: list[tuple[dict, int]] = None,
         generators_u_vector: list[list[np.ndarray[np.intp]]] = None,
         G: nx.Graph = None,
         idx_to_node: dict = None,
     ):
         self._child = child
         self.rng = np.random.default_rng(seed)
-        self.generators_listdict = generators_listdict
+        self.generators_listtuple = generators_listtuple
         self.generators_u_vector = generators_u_vector
         self.idx_to_node = idx_to_node
         if (
             generators_u_vector is None
-            and generators_listdict is None
+            and generators_listtuple is None
             and G is not None
         ):
             self.idx_to_node = {idx: n for idx, n in enumerate(G.nodes)}
@@ -422,7 +450,7 @@ class AutomorphismComposite(ComposedSampler):
                 to 1.
                 A value of ``0`` will result in sampling of an unmapped problem.
                 If mappings is None the mappings are generated randomly using the
-                `generators_listdict` class variable.
+                `generators_listtuple` class variable.
 
         Returns:
             A sample set. Note that for a sampler that returns ``num_reads`` samples,
@@ -465,12 +493,12 @@ class AutomorphismComposite(ComposedSampler):
                 raise ValueError(
                     "len(mappings) should match num_automorphisms when not None"
                 )
-        elif self.generators_listdict is not None:
+        elif self.generators_listtuple is not None:
             # Generator compatible (uniform random) permutation on all variables
             mapping = {v: v for v in bqm.variables}
             mappings = [
-                sample_automorphisms_listdict(
-                    self.generators_listdict, prng=self.rng, mapping=mapping
+                sample_automorphisms_listtuple(
+                    self.generators_listtuple, prng=self.rng, mapping=mapping
                 )
                 for _ in range(num_automorphisms)
             ]
@@ -536,9 +564,9 @@ if __name__ == "__main__":
     response = composed_sampler.sample_ising({"a": -0.5, "b": 1.0}, {("a", "b"): -1})
     print(response.first.sample)
 
-    for generators_listdict in [None, [({"a": "b", "b": "a"}, 2)]]:
+    for generators_listtuple in [None, [({"a": "b", "b": "a"}, 2)]]:
         composed_sampler = AutomorphismComposite(
-            base_sampler, generators_listdict=generators_listdict
+            base_sampler, generators_listtuple=generators_listtuple
         )
         # Sample an Ising problem
         response = composed_sampler.sample_ising(
@@ -556,10 +584,10 @@ if __name__ == "__main__":
     )
     import matplotlib.pyplot as plt
 
-    # Test chimera generators:
-    topology_type = "chimera"
+    # Test various defect-free dwave_networkx generators:
+    # topology_type = "chimera"
     # topology_type = "zephyr"
-    # topology_type = "pegasus"
+    topology_type = "pegasus"
     if topology_type == "chimera":
         topology_shape = [3, 2, 3]
         make_graph = chimera_graph
@@ -598,17 +626,26 @@ if __name__ == "__main__":
     ]
     pruned_generators = []
     for g in generators:
-        new = prune_by_vacancies(proposal=g, nodeset=Gnodes)
+        new = prune_by_vacancies(g[0], nodeset=Gnodes)
         if new:
-            pruned_generators.append(new)
-            assert set(new[0].keys()).issubset(Gnodes)
+            pruned_generators.append((new, g[1]))
+            assert set(new.keys()).issubset(Gnodes)
     composed_sampler = AutomorphismComposite(
-        base_sampler, generators_listdict=pruned_generators
+        base_sampler, generators_listtuple=pruned_generators
     )
 
     composed_sampler2 = AutomorphismComposite(base_sampler, G=G)
     print("u_vector", composed_sampler2.generators_u_vector)
-
+    print("listtuple", generators)
+    node_to_idx = {v: k for k, v in composed_sampler2.idx_to_node.items()}
+    alt_uvectors = listtuple_to_arrays(generators, node_to_idx)
+    print("listtuple as u_vector", alt_uvectors)
+    print(
+        "SchreierSims",
+        len(composed_sampler2.generators_u_vector),
+        [len(v) for v in composed_sampler2.generators_u_vector],
+    )
+    print("Mine", len(alt_uvectors), [len(v) for v in alt_uvectors])
     bqm = dimod.BinaryQuadraticModel("SPIN").from_ising({}, {e: -1 for e in G.edges})
     for cs in [composed_sampler, composed_sampler2]:
         response = composed_sampler.sample(bqm, num_automorphisms=2)
@@ -627,10 +664,10 @@ if __name__ == "__main__":
         generators = graph_generators(**graph_params)
         pruned_generators = []
         for g in generators:
-            new = prune_by_vacancies(proposal=g, nodeset=Gnodes)
+            new = prune_by_vacancies(g[0], nodeset=Gnodes)
             if new:
-                pruned_generators.append(new)
-                assert set(new[0].keys()).issubset(Gnodes)
+                pruned_generators.append((new, g[1]))
+                assert set(new.keys()).issubset(Gnodes)
 
         for g, ol in pruned_generators:
             if set(g.keys()) != set(g.values()):
@@ -652,7 +689,7 @@ if __name__ == "__main__":
             assert Gnedges == Gedges
             # assert list(Gn.edges()) != list(G.edges())
 
-        random_perm = sample_automorphisms_listdict(pruned_generators)
+        random_perm = sample_automorphisms_listtuple(pruned_generators)
         assert set(random_perm.keys()) == Gnodes
         assert set(random_perm.values()) == Gnodes
         Gn = relabel_nodes(G, random_perm)
