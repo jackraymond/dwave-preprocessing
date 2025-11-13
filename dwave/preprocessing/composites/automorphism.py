@@ -40,29 +40,29 @@ __all__ = [
     "pegasus_generators",
     "zephyr_generators",
     "sample_automorphisms_listtuple",
+    "listtuple_to_arrays",
 ]
 
 
 def listtuple_to_arrays(
     listtuple: list[tuple[dict, int]], node_to_idx: dict
 ) -> list[list[np.ndarray[np.intp]]]:
-    """Unwrap (generator, cycle-length) pairs into array format"""
+    """Unwrap (generator, degree) pairs into array format"""
 
     nodeset = set(node_to_idx.keys())
     listtuple = [
-        (prune_by_vacancies(g, nodeset), n) for g, n in listtuple
+        (prune_by_nodeset(g, nodeset), n) for g, n in listtuple
     ]  # Compress listtuple w.r.t. mapped nodes.
     listtuple = [p for p in listtuple if p[0]]  # Remove anything redundant
-    print(listtuple, len(listtuple))
     llarray = [
         [np.arange(len(node_to_idx), dtype=np.intp) for _ in range(n - 1)]
         for _, n in listtuple
     ]
-    for larray, (g, cycle_len) in zip(llarray, listtuple):
+    for larray, (g, degree) in zip(llarray, listtuple):
         g = {node_to_idx[k]: node_to_idx[v] for k, v in g.items()}
         for k, v in g.items():
             larray[0][k] = v  # First element is standard generator
-        for idx in range(cycle_len - 2):
+        for idx in range(degree - 2):
             parray = larray[idx]  # same generator applied up to n-1 times.
             for k, v in g.items():
                 larray[idx + 1][parray[k]] = parray[v]
@@ -70,72 +70,133 @@ def listtuple_to_arrays(
 
 
 def chimera_generators(
-    m: int, n: Optional[int] = None, t: int = 4
+    m: int,
+    n: Optional[int] = None,
+    t: int = 4,
+    generator_type: str = "redundant",
 ) -> list[tuple[dict, int]]:
+    """Return generators for Chimera graphs.
+
+    Args:
+       m: number or rows
+       n: number of columns
+       t: tile parameter
+       generator_type: The type of generator, either `redundant`,
+          to specify a set suitable for sequential sampling, or
+          'strongest' to generate a strongest set. The size of the
+          group is given by the product of degrees in the redunant
+          representation if m!=n or t<2. And is given by the product
+          divided by 2 for the case t>1 and m=n.
+    Returns:
+        A list of tuples. Each tuple includes a generator, and the
+        degree of the generator.
+    """
+
     if n is None:
         n = m
 
     if n == m:
-        diagonal = (
-            {
-                (i, j, u, k): (i, j, 1 - u, k)
-                for i in range(m)
-                for j in range(n)
-                for u in range(2)
-                for k in range(t)
-            },
-            2,
-        )
-    vertical = (
-        {
-            (i, j, u, k): (m - 1 - i, j, u, k)
-            for i in range(m)
-            for j in range(n)
-            for u in range(2)
-            for k in range(t)
-        },
-        2,
-    )
-    horizontal = (
-        {
-            (i, j, u, k): (i, n - 1 - j, u, k)
-            for i in range(m)
-            for j in range(n)
-            for u in range(2)
-            for k in range(t)
-        },
-        2,
-    )
+        # Verticals to horizontals
+        diagonal = [
+            (
+                {
+                    (i, j, u, k): (i, j, 1 - u, k)
+                    for i in range(m)
+                    for j in range(n)
+                    for u in range(2)
+                    for k in range(t)
+                },
+                2,
+            )
+        ]
+    else:
+        diagonal = []
+    if m > 1:
+        vertical = [
+            (
+                {
+                    (i, j, u, k): (m - 1 - i, j, u, k)
+                    for i in range(m)
+                    for j in range(n)
+                    for u in range(2)
+                    for k in range(t)
+                },
+                2,
+            )
+        ]
+    else:
+        vertical = []
+    if n > 1 and (m != n or generator_type == "redundant"):
+        horizontal = [
+            (
+                {
+                    (i, j, u, k): (i, n - 1 - j, u, k)
+                    for i in range(m)
+                    for j in range(n)
+                    for u in range(2)
+                    for k in range(t)
+                },
+                2,
+            )
+        ]
+    else:
+        horizontal = []
     # Shore Permutations correlated by row/column
     # - must be ordered: (1,..,k) then (1,,k-1) .. (1,2) etc. fully mixes (permutation)
-    vert_shores = [
-        (
-            {
-                (i, j, 0, k): (i, j, 0, (k + 1) % kp)
-                for i in range(m)
-                for k in range(kp)
-            },
-            kp,
-        )
-        for kp in range(t, 1, -1)
-        for j in range(n)
-    ]
-    horiz_shores = [
-        (
-            {
-                (i, j, 1, k): (i, j, 1, (k + 1) % kp)
-                for j in range(n)
-                for k in range(kp)
-            },
-            kp,
-        )
-        for kp in range(t, 1, -1)
-        for i in range(m)
-    ]
-    if n == m:
-        return [diagonal, vertical, horizontal] + vert_shores + horiz_shores
+    if generator_type == "redundant":
+        vert_shores = [
+            (
+                {
+                    (i, j, 0, k): (i, j, 0, (k + 1) % kp)
+                    for i in range(m)
+                    for k in range(kp)
+                },
+                kp,
+            )
+            for kp in range(t, 1, -1)
+            for j in range(n)
+        ]
+        horiz_shores = [
+            (
+                {
+                    (i, j, 1, k): (i, j, 1, (k + 1) % kp)
+                    for j in range(n)
+                    for k in range(kp)
+                },
+                kp,
+            )
+            for kp in range(t, 1, -1)
+            for i in range(m)
+        ]
     else:
-        return [vertical, horizontal] + vert_shores + horiz_shores
+        vert_shores = [
+            (
+                {
+                    (i, j, 0, k + o1): (i, j, 0, k + o2)
+                    for i in range(m)
+                    for o1, o2 in [(0, 1), (1, 0)]
+                },
+                2,
+            )
+            for k in range(t, 1, -1)
+            for j in range((n + 1) // 2)
+        ]
+        if m != n:
+            horiz_shores = [
+                (
+                    {
+                        (i, j, 1, k + o1): (i, j, 1, k + o2)
+                        for j in range(n)
+                        for o1, o2 in [(0, 1), (1, 0)]
+                    },
+                    2,
+                )
+                for k in range(t, 1, -1)
+                for i in range((m + 1) // 2)
+            ]
+        else:
+            horiz_shores = []
+        return diagonal + vertical + horizontal + vert_shores + horiz_shores
 
 
 def flipZephyr(u: int, w: int, k: int, j: int, z: int, orient: bool, m: int) -> tuple:
@@ -152,87 +213,128 @@ def flipZephyr(u: int, w: int, k: int, j: int, z: int, orient: bool, m: int) -> 
     )
 
 
-def zephyr_generators(m: int, t: int = 4) -> list[tuple[dict, int]]:
-    """Create generators for zephyr
+def zephyr_generators(
+    m: int, t: int = 4, generator_type="redundant"
+) -> list[tuple[dict, int]]:
+    """Create generators for zephyr graphs
 
-    m : int
-        Grid parameter for the Zephyr lattice.
-    t : int
-        Tile parameter for the Zephyr lattice.
+    Args:
+        m: Grid parameter for the Zephyr lattice.
+        t: Tile parameter for the Zephyr lattice.
+        generator_type: The type of generator, either `redundant`,
+          to specify a set suitable for sequential sampling, or
+          'strongest' to generate a strongest set. The size of the
+          group is given by the product of degrees in the redundant.
+    Returns:
+        A list of tuples. Each tuple includes a generator, and the
+        degree of the generator.
     """
 
-    diagonal = (
-        {
-            (u, w, k, j, z): (1 - u, w, k, j, z)
-            for u in range(2)
-            for w in range(2 * m + 1)
-            for k in range(t)
-            for j in range(2)
-            for z in range(m)
-        },
-        2,
-    )
-    vertical = (
-        {
-            (u, w, k, j, z): flipZephyr(u, w, k, j, z, True, m)
-            for u in range(2)
-            for w in range(2 * m + 1)
-            for k in range(t)
-            for j in range(2)
-            for z in range(m)
-        },
-        2,
-    )
-    horizontal = (
-        {
-            (u, w, k, j, z): flipZephyr(u, w, k, j, z, False, m)
-            for u in range(2)
-            for w in range(2 * m + 1)
-            for k in range(t)
-            for j in range(2)
-            for z in range(m)
-        },
-        2,
-    )
-    # Shore Permutations correlated by row/column
-    # - must be ordered: (1,..,k) then (1,,k-1) .. (1,2) etc. fully mixes (permutation)
-    shores = [
+    diagonal = [
         (
             {
-                (u, w, k, j, z): (u, w, (k + 1) % kp, j, z)
-                for z in range(m)
+                (u, w, k, j, z): (1 - u, w, k, j, z)
+                for u in range(2)
+                for w in range(2 * m + 1)
+                for k in range(t)
                 for j in range(2)
-                for k in range(kp)
+                for z in range(m)
             },
-            kp,
+            2,
         )
-        for kp in range(t, 1, -1)
-        for u in range(2)
-        for w in range(2 * m + 1)
     ]
-
-    return [diagonal, vertical, horizontal] + shores
-
-
-def pegasus_generators(m: int) -> list[tuple[dict, int]]:
-    """Create generators for pegasus.
-
-    A reflection on the main diagonal, and exchanges of oddly coupled pairs.
-
-    m : int
-        Grid parameter for the Pegasus lattice.
-    """
-
-    diagonal = (
-        {
-            (u, w, k, z): (1 - u, m - 1 - w, 11 - k, m - 2 - z)
+    vertical = [
+        (
+            {
+                (u, w, k, j, z): flipZephyr(u, w, k, j, z, True, m)
+                for u in range(2)
+                for w in range(2 * m + 1)
+                for k in range(t)
+                for j in range(2)
+                for z in range(m)
+            },
+            2,
+        )
+    ]
+    if generator_type != "strongest":
+        horizontal = [
+            (
+                {
+                    (u, w, k, j, z): flipZephyr(u, w, k, j, z, False, m)
+                    for u in range(2)
+                    for w in range(2 * m + 1)
+                    for k in range(t)
+                    for j in range(2)
+                    for z in range(m)
+                },
+                2,
+            )
+        ]
+    else:
+        horizontal = []
+    # Shore Permutations correlated by row/column
+    # - must be ordered: (1,..,k) then (1,,k-1) .. (1,2) etc. fully mixes (permutation)
+    if generator_type != "strongest":
+        shores = [
+            (
+                {
+                    (u, w, k, j, z): (u, w, (k + 1) % kp, j, z)
+                    for z in range(m)
+                    for j in range(2)
+                    for k in range(kp)
+                },
+                kp,
+            )
+            for kp in range(t, 1, -1)
             for u in range(2)
-            for w in range(m)
-            for k in range(12)
-            for z in range(m - 1)
-        },
-        2,
-    )
+            for w in range(2 * m + 1)
+        ]
+    else:
+        shores = [
+            (
+                {
+                    (u, w, k, j, z): (u, w, (k + 1) % kp, j, z)
+                    for z in range(m)
+                    for j in range(2)
+                    for k in range(kp)
+                },
+                kp,
+            )
+            for kp in range(t, 1, -1)
+            for u in range(1)  # one orientation suffices
+            for w in range(m + 1)  # half way suffices
+        ]
+
+    return diagonal + vertical + horizontal + shores
+
+
+def pegasus_generators(
+    m: int, generator_type: str = "redundant"
+) -> list[tuple[dict, int]]:
+    """Create generators for pegasus (fabric_only for m>1)
+
+    Args:
+        m: Grid parameter for the Pegasus lattice.
+        generator_type: The type of generator, either `redundant`,
+          to specify a set suitable for sequential sampling, or
+          'strongest' to generate a strongest set. The size of the
+          group is given by the product of degrees in the redundant.
+    Returns:
+        A list of tuples. Each tuple includes a generator, and the
+        degree of the generator.
+    """
+    diagonal = [
+        (
+            {
+                (u, w, k, z): (1 - u, m - 1 - w, 11 - k, m - 2 - z)
+                for u in range(2)
+                for w in range(m)
+                for k in range(12)
+                for z in range(m - 1)
+            },
+            2,
+        )
+    ]
     # Odd-pairs
     odd_pairs = [
         (
@@ -247,8 +349,29 @@ def pegasus_generators(m: int) -> list[tuple[dict, int]]:
         for u in range(2)
         for w in range(m)
     ]
-
-    return [diagonal] + odd_pairs
+    if generator_type == "strongest":
+        urange = (0,)
+    elif generator_type == "redundant":
+        urange = (0, 1)
+    else:
+        raise ValueError("Unknown generator type")
+    # Constrain to the standard (fabric_only) representation (the largest component):
+    nonfabric = {
+        (u, m - 1, k, z) for u in range(2) for k in range(10, 12) for z in range(m - 1)
+    } | {(u, 0, k, z) for u in urange for k in range(2) for z in range(m - 1)}
+    fabric = {
+        c for c in product(range(2), range(m), range(12), range(m - 1))
+    }.difference(nonfabric)
+    pruned_generators = []
+    for g in diagonal + odd_pairs:
+        new = prune_by_nodeset(g[0], nodeset=fabric)
+        if new:
+            pruned_generators.append((new, g[1]))
+            assert set(new.keys()).issubset(fabric)
+    assert fabric == {
+        pegasus_coordinates(m).linear_to_pegasus(n) for n in pegasus_graph(m).nodes()
+    }
+    return pruned_generators
 
 
 def sample_automorphisms_listtuple(generators_listtuple, prng=None, mapping=None):
@@ -256,27 +379,50 @@ def sample_automorphisms_listtuple(generators_listtuple, prng=None, mapping=None
     if mapping is None:
         vars_set = set(n for g in generators_listtuple for n in g[0].keys())
         mapping = {n: n for n in vars_set}
-    for generator, len_cycle in generators_listtuple:
+    for generator, degree in generators_listtuple:
         # Generator is a dictionary, with some given cycle length
         # e.g. {2: 4, 4: 2}
-        for _ in range(prng.integers(len_cycle)):
+        for _ in range(prng.integers(degree)):
             mapping.update({k: mapping[v] for k, v in generator.items()})
 
     return mapping
 
 
-def prune_by_vacancies(generator, nodeset):
+def prune_by_nodeset(generator_dict, nodeset):
     """Remove mappings for absent nodes, and delete invalidated maps."""
     # Removing as a function of edge defects would also be useful.
 
-    nodeset = nodeset.intersection(set(generator.keys()))
+    nodeset = nodeset.intersection(set(generator_dict.keys()))
     if not nodeset:
         return {}
-    new = {n: generator[n] for n in nodeset}
-    if nodeset == set(new.values()):
-        return new
-    else:
-        return {}
+    reduced_nodeset = nodeset & set({generator_dict[n] for n in nodeset})
+    while reduced_nodeset != nodeset:
+        nodeset = reduced_nodeset
+        reduced_nodeset = nodeset & set({generator_dict[n] for n in nodeset})
+    return {n: generator_dict[n] for n in nodeset}
+
+
+def prune_by_edgeset(generator, edgeset):
+    """
+
+    If edges are not mapped into each other under the generator their associated
+    nodes must be removed. The resulting generator can be pruned for consistency
+    across the remaining nodes mapped - defining a reduced generator.
+
+    Note that any nodes in the edgeset that are not in the
+    generator are assumed to map to themselves.
+
+    """
+    nodeset = {n for e in edgeset for n in e}.intersection(set(generator.keys()))
+    edgeset = {
+        frozenset(e) for e in edgeset
+    }  # Note edges can be external to elements in the generator.
+    generated_edgeset = edgeset.intersection(
+        {frozenset(generator[i] for i, j in edgeset)}
+    )
+    # If an edge is absent we must recursively remove the associated nodes:
+    bad_nodes = {n for e in generated_edgeset ^ edgeset for n in e}
+    return prune_by_nodeset(generator, nodeset.difference(bad_nodes))
 
 
 class AutomorphismComposite(ComposedSampler):
@@ -549,6 +695,9 @@ if __name__ == "__main__":
     from dimod import ExactSolver
     from itertools import product
 
+    # Test pruning:
+    # E.g. generators for a clique
+
     # QUITE THOROUGH: MOVE THIS TO TESTS
 
     base_sampler = ExactSolver()
@@ -558,7 +707,7 @@ if __name__ == "__main__":
     print(composed_sampler.generators_u_vector)
     print(
         sample_automorphisms_u_vectors(
-            composed_sampler.generators_u_vector, 10, rng=None
+            composed_sampler.generators_u_vector, 10, seed=None
         )
     )
     response = composed_sampler.sample_ising({"a": -0.5, "b": 1.0}, {("a", "b"): -1})
@@ -584,12 +733,120 @@ if __name__ == "__main__":
     )
     import matplotlib.pyplot as plt
 
+    try:
+        import pynauty  # Do tests if available, can hardcode values for tests.
+
+        def get_permutations(Gembeddable, get_generators=True):
+            """From latqa"""
+            Gpn = pynauty.Graph(Gembeddable.number_of_nodes())
+            node_index_dict = {n: i for i, n in enumerate(Gembeddable.nodes)}
+            for u, v in Gembeddable.edges:
+                Gpn.connect_vertex(node_index_dict[u], node_index_dict[v])
+                # Gpn.connect_vertex(node_index_dict[v], node_index_dict[u])
+            X = pynauty.autgrp(Gpn)
+            if get_generators:
+                return np.array(X[0]), {
+                    n: i for i, n in node_index_dict.items()
+                }  # automorphism generators
+            else:
+                return X[1]
+
+        print("Ring")
+        for L in range(3, 6):
+            graph = nx.from_edgelist({(i, (i + 1) % L) for i in range(L)})
+            g1 = get_permutations(graph)
+            print(g1)
+            aut_group_size = get_permutations(graph, False)
+            print("pynauty size: ", aut_group_size)
+        print("Clique")
+        for L in range(3, 6):
+            graph = nx.from_edgelist({(i, j) for i in range(L) for j in range(i)})
+            g1 = get_permutations(graph)
+            print(g1)
+            aut_group_size = get_permutations(graph, False)
+            print("pynauty size: ", aut_group_size)
+        print("BiClique (L,L)")
+        for L in range(1, 6):
+            graph = nx.from_edgelist({(i, L + j) for i in range(L) for j in range(L)})
+            g1 = get_permutations(graph)
+            print(L, g1)
+            aut_group_size = get_permutations(graph, False)
+            print("pynauty size: ", aut_group_size)
+        print()
+        print("Pegasus")
+        dnxg, my_g = pegasus_graph, pegasus_generators
+        for m in range(2, 5):
+            graph = dnxg(m=m)
+            g1 = get_permutations(graph)
+            g2 = my_g(m=m)
+            print(f"Strongest set m={m}", len(g1[0]), len(g2))
+            rep = schreier_rep(
+                nx.relabel_nodes(graph, {n: idx for idx, n in enumerate(graph.nodes())})
+            )
+            print(
+                "Size of rep",
+                rep.num_automorphisms,
+                np.prod([d for _, d in g2]),
+                rep.num_automorphisms <= np.prod([d for _, d in g2]),
+            )
+            aut_group_size = get_permutations(graph, False)
+            print("pynauty size: ", aut_group_size)
+
+        print("Zephyr")
+        dnxg, my_g = zephyr_graph, zephyr_generators
+        for m in range(1, 4):
+            for t in range(1, 5):
+                graph = dnxg(m=m, t=t)
+                g1 = get_permutations(dnxg(m=m, t=t))
+                g2 = my_g(m=m, t=t)
+                print(f"Strongest set m={m} t={t}", len(g1[0]), len(g2))
+                rep = schreier_rep(graph)
+                print(
+                    "Size of rep",
+                    rep.num_automorphisms,
+                    np.prod([d for _, d in g2]),
+                    rep.num_automorphisms <= np.prod([d for _, d in g2]),
+                )
+                aut_group_size = get_permutations(graph, False)
+                print("pynauty size: ", aut_group_size)
+
+        print()
+        print("Chimera")
+        dnxg, my_g = chimera_graph, chimera_generators
+        for m in range(1, 4):
+            for n in range(1, 4):
+                for t in range(1, 7):
+                    graph = dnxg(m=m, n=n, t=t)
+                    g1 = get_permutations(graph)
+                    g2 = my_g(m=m, n=n, t=t)
+                    rep = schreier_rep(graph)
+                    print(f"Strongest set m={m} n={n}, t={t}", len(g1[0]), len(g2))
+                    print(
+                        "Size of rep (Sebastian)",
+                        rep.num_automorphisms,
+                        "Mine",
+                        np.prod([d for _, d in g2]),
+                        rep.num_automorphisms <= np.prod([d for _, d in g2]),
+                    )
+                    aut_group_size = get_permutations(graph, False)
+                    print("pynauty size: ", aut_group_size)
+
+                    if len(g1[0]) != len(g2):
+                        print("Problem")
+                        if len(g1[0]) < 10:
+                            print(g1)
+                            print(g2)
+                        print()
+
+        raise ValueError("DEBUG")
+    except:
+        raise ValueError("pynauty wanted")
     # Test various defect-free dwave_networkx generators:
-    # topology_type = "chimera"
+    topology_type = "chimera"
     # topology_type = "zephyr"
-    topology_type = "pegasus"
+    # topology_type = "pegasus"
     if topology_type == "chimera":
-        topology_shape = [3, 2, 3]
+        topology_shape = [3, 2, 4]
         make_graph = chimera_graph
         graph_generators = chimera_generators
         coord_transform = chimera_coordinates(*topology_shape).chimera_to_linear
@@ -626,7 +883,7 @@ if __name__ == "__main__":
     ]
     pruned_generators = []
     for g in generators:
-        new = prune_by_vacancies(g[0], nodeset=Gnodes)
+        new = prune_by_nodeset(g[0], nodeset=Gnodes)
         if new:
             pruned_generators.append((new, g[1]))
             assert set(new.keys()).issubset(Gnodes)
@@ -664,7 +921,7 @@ if __name__ == "__main__":
         generators = graph_generators(**graph_params)
         pruned_generators = []
         for g in generators:
-            new = prune_by_vacancies(g[0], nodeset=Gnodes)
+            new = prune_by_nodeset(g[0], nodeset=Gnodes)
             if new:
                 pruned_generators.append((new, g[1]))
                 assert set(new.keys()).issubset(Gnodes)
